@@ -1,72 +1,60 @@
 #include <dlfcn.h>
 #include <iostream>
+#include <memory>
+#include <functional>
+#include <stdexcept>
 
-typedef void (*throwFuncPtr)(void);
-typedef void (*catchFuncPtr)(const throwFuncPtr);
+
+using throwFuncPtr = void (*)(void);
+using catchFuncPtr = void (*)(const throwFuncPtr);
 
 static constexpr int dlopenFlags = RTLD_NOW;
 
+
+auto OpenPlugin(const std::string &pluginName)
+{
+    auto pluginPtr = dlopen(pluginName.c_str(), dlopenFlags);
+    if (!pluginPtr)
+        throw std::runtime_error("Can't load plugin " + pluginName + ": " + dlerror());
+
+    std::cout << "Plugin " << pluginName << " successfully opened" << std::endl;
+
+    auto dlDeleter = [pluginName](void *ptr) {
+        if (ptr && dlclose(ptr) != 0)
+            std::cerr << "Can't close plugin " << pluginName << ": " << dlerror() << std::endl;
+
+        std::cout << "Plugin " << pluginName << " successfully closed" << std::endl;
+    };
+
+    return std::shared_ptr<void>(pluginPtr, dlDeleter);
+}
+
+template<typename T>
+auto OpenSymbol(std::shared_ptr<void> pluginPtr, const std::string &symbolName)
+{
+    auto funcPtr = reinterpret_cast<T>(dlsym(pluginPtr.get(), symbolName.c_str()));
+    if (!funcPtr)
+        throw std::runtime_error("Can't load symbol " + symbolName + ": " + dlerror());
+
+    std::cout << "Symbol " << symbolName << " successfully loaded" << std::endl;
+    return funcPtr;
+}
+
+
 int main(int, const char **)
 {
-    auto pluginCatch = dlopen("./libplugin-catch.so", dlopenFlags);
-    if (!pluginCatch)
+    try
     {
-        std::cerr << "Can't load libplugin-catch.so: " << dlerror() << std::endl;
+        auto pluginCatch = OpenPlugin("./libplugin-catch.so");
+        auto pluginThrow = OpenPlugin("./libplugin-throw.so");
+        auto funcCatch = OpenSymbol<catchFuncPtr>(pluginCatch, "FunctionCatch");
+        auto funcThrow = OpenSymbol<throwFuncPtr>(pluginThrow, "FunctionThrow");
+        (*funcCatch)(funcThrow);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Exception catch: " << e.what() << std::endl;
         return 1;
-    }
-
-    auto pluginThrow = dlopen("./libplugin-throw.so", dlopenFlags);
-    if (!pluginThrow)
-    {
-        std::cerr << "Can't load libplugin-throw.so: " << dlerror() << std::endl;
-
-        if (dlclose(pluginCatch) != 0)
-            std::cerr << "Can't close pluginCatch: " << dlerror() << std::endl;
-
-        return 2;
-    }
-
-    auto funcCatch = reinterpret_cast<catchFuncPtr>(dlsym(pluginCatch, "FunctionCatch"));
-    if (!funcCatch)
-    {
-        std::cerr << "Can't load FunctionCatch: " << dlerror() << std::endl;
-
-        if (dlclose(pluginCatch) != 0)
-            std::cerr << "Can't close pluginCatch: " << dlerror() << std::endl;
-
-        if (dlclose(pluginThrow) != 0)
-            std::cerr << "Can't close pluginThrow: " << dlerror() << std::endl;
-
-        return 3;
-    }
-
-    auto funcThrow = reinterpret_cast<throwFuncPtr>(dlsym(pluginThrow, "FunctionThrow"));
-    if (!funcThrow)
-    {
-        std::cerr << "Can't load FunctionThrow: " << dlerror() << std::endl;
-
-        if (dlclose(pluginCatch) != 0)
-            std::cerr << "Can't close pluginCatch: " << dlerror() << std::endl;
-
-        if (dlclose(pluginThrow) != 0)
-            std::cerr << "Can't close pluginThrow: " << dlerror() << std::endl;
-
-        return 4;
-    }
-
-    // Let's do it finally!
-    (*funcCatch)(funcThrow);
-
-    if (dlclose(pluginCatch) != 0)
-    {
-        std::cerr << "Can't close pluginCatch: " << dlerror() << std::endl;
-        return 5;
-    }
-
-    if (dlclose(pluginThrow) != 0)
-    {
-        std::cerr << "Can't close pluginThrow: " << dlerror() << std::endl;
-        return 6;
     }
 
     return 0;
